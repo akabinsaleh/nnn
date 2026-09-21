@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="theme-color" content="#0b0b0b">
 <title>Our Wrapped</title>
 <meta property="og:title" content="Our Wrapped — 2024–2026">
@@ -13,10 +13,10 @@
 <style>
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;height:100%;background:#141414;overflow:hidden;overscroll-behavior:none}
-#stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#141414}
-#frame{width:390px;height:844px;position:relative;overflow:hidden;background:#0b0b0b;font-family:'Figtree',sans-serif;transform-origin:center center;user-select:none;-webkit-user-select:none;-webkit-tap-highlight-color:transparent;touch-action:none;cursor:pointer}
+#stage{position:fixed;inset:0;background:#141414;overflow:hidden}
+#frame{width:390px;height:844px;position:absolute;left:0;top:0;overflow:hidden;background:#0b0b0b;transition:background .4s ease;font-family:'Figtree',sans-serif;transform-origin:top left;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;touch-action:none;cursor:pointer}
 #frame.framed{border-radius:32px;box-shadow:0 30px 80px rgba(0,0,0,.6)}
-.screen{position:absolute;inset:0;opacity:0;pointer-events:none;transition:opacity .45s ease;overflow:hidden}
+.screen{position:absolute;left:var(--ox,0px);top:var(--oy,0px);width:390px;height:844px;opacity:0;pointer-events:none;transition:opacity .45s ease;overflow:hidden}
 .screen.active{opacity:1;pointer-events:auto}
 
 /* ---------- enter animations ---------- */
@@ -60,6 +60,11 @@ html,body{margin:0;padding:0;height:100%;background:#141414;overflow:hidden;over
 .screen.active.s10{animation:flood .9s ease both}
 @keyframes flood{from{background:#141414}to{background:#3df26a}}
 
+/* hold = freeze everything, like real stories */
+#frame.held .screen *{animation-play-state:paused !important}
+#frame.held .screen{animation-play-state:paused !important}
+#frame.held #nowplay,#frame.held #foot,#frame.held #mute{opacity:0}
+#nowplay,#foot,#mute{transition:opacity .25s ease}
 /* ---------- chrome ---------- */
 #progress{position:absolute;top:14px;left:14px;right:14px;display:flex;gap:3px;z-index:40;pointer-events:none}
 #progress .seg{flex:1;height:3px;border-radius:2px;background:currentColor;opacity:.28;position:relative;overflow:hidden}
@@ -356,15 +361,40 @@ var screens = Array.prototype.slice.call(document.querySelectorAll('.screen'));
 var chrome_ = document.getElementById('chrome');
 var reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-/* ---------- scale phone frame to viewport ---------- */
+/* ---------- fit to any screen (full-bleed on phones) ---------- */
 function fit(){
-  var s = Math.min(window.innerWidth/390, window.innerHeight/844);
-  var full = s >= 0.99 && Math.abs(window.innerWidth/window.innerHeight - 390/844) < 0.14;
-  if (window.innerWidth <= 500) { frame.classList.remove('framed'); }
-  else { frame.classList.add('framed'); s = Math.min(s, (window.innerHeight-48)/844); }
+  var W = window.innerWidth, H = window.innerHeight;
+  var phone = W <= 500;
+  var s = phone ? Math.min(W/390, H/844) : Math.min(1, (H-48)/844);
+  var Wl = phone ? W/s : 390, Hl = phone ? H/s : 844;
+  frame.classList.toggle('framed', !phone);
+  frame.style.width = Wl + 'px';
+  frame.style.height = Hl + 'px';
+  frame.style.setProperty('--ox', ((Wl-390)/2) + 'px');
+  frame.style.setProperty('--oy', ((Hl-844)/2) + 'px');
   frame.style.transform = 'scale(' + s + ')';
+  frame.style.left = phone ? '0px' : ((W - 390*s)/2) + 'px';
+  frame.style.top  = phone ? '0px' : ((H - 844*s)/2) + 'px';
 }
-window.addEventListener('resize', fit); fit();
+window.addEventListener('resize', fit);
+window.addEventListener('orientationchange', function(){ setTimeout(fit, 250); });
+fit();
+
+/* virtual clock that stops while the story is held/paused */
+var pauseAccum = 0, pauseStart = null;
+function vnow(){ var n = performance.now(); return n - pauseAccum - (pauseStart !== null ? n - pauseStart : 0); }
+function freeze(){
+  if (pauseStart !== null) return;
+  pauseStart = performance.now();
+  frame.classList.add('held');
+  if (curSong >= 0) players[curSong].pause();
+}
+function thaw(){
+  if (pauseStart === null) return;
+  pauseAccum += performance.now() - pauseStart; pauseStart = null;
+  frame.classList.remove('held');
+  if (curSong >= 0 && unlocked){ var a = players[curSong]; a.muted = muted; a.volume = muted ? 0 : 1; a.play().catch(function(){}); }
+}
 
 /* ---------- music ---------- */
 var SONGS = [
@@ -467,7 +497,7 @@ for (var i = 0; i < N; i++){
 /* per-screen auto-advance durations (ms); screen 8 lingers, screen 15 stays */
 var DUR = [7000,7500,7500,6500,8000,8500,8000,13000,8500,7000,9500,9500,9500,9500,0];
 
-var cur = -1, raf = null, t0 = 0, pausedAt = null, started = false;
+var cur = -1, raf = null, t0 = 0, started = false;
 
 function renderProgress(p){
   for (var i = 0; i < N; i++){
@@ -480,8 +510,8 @@ function renderProgress(p){
 function tick(){
   if (cur < 0) return;
   if (DUR[cur] === 0){ renderProgress(1); return; }
-  if (pausedAt === null){
-    var p = (performance.now() - t0) / DUR[cur];
+  if (pauseStart === null){
+    var p = (vnow() - t0) / DUR[cur];
     if (p >= 1){ next(); return; }
     renderProgress(p);
   }
@@ -501,7 +531,8 @@ function runCounts(scr){
     if (reduced){ el.textContent = fmt(target); return; }
     el.textContent = fmt(0);
     var st = null;
-    function step(ts){
+    function step(){
+      var ts = vnow();
       if (st === null) st = ts;
       var t = (ts - st - delay) / dur;
       if (t < 0){ el._cnt = requestAnimationFrame(step); return; }
@@ -516,6 +547,7 @@ function runCounts(scr){
 
 /* ---------- navigation ---------- */
 function goTo(i, viaUser){
+  thaw();
   if (i < 0) i = 0;
   if (i > N-1) i = N-1;
   if (i === cur) return;
@@ -531,10 +563,10 @@ function goTo(i, viaUser){
   });
   var scr = screens[i];
   chrome_.style.setProperty('--fg', scr.getAttribute('data-fg'));
+  frame.style.background = scr.getAttribute('data-bg');
   runCounts(scr);
   playFor(i);
-  t0 = performance.now();
-  pausedAt = null;
+  t0 = vnow();
   renderProgress(0);
   if (raf) cancelAnimationFrame(raf);
   raf = requestAnimationFrame(tick);
@@ -543,35 +575,31 @@ function next(){ if (cur >= N-1){ renderProgress(1); return; } goTo(cur+1, true)
 function prev(){ goTo(cur-1, true); }
 
 /* tap / hold / swipe */
-var downT = 0, downX = 0, downY = 0, holdTO = null, holding = false;
+var downT = 0, downX = 0, downY = 0, holdTO = null, holding = false, active = false;
+frame.addEventListener('contextmenu', function(e){ e.preventDefault(); });
 frame.addEventListener('pointerdown', function(e){
   if (!started) return;
   if (e.target.closest('button')) return;
+  active = true;
   downT = performance.now(); downX = e.clientX; downY = e.clientY; holding = false;
-  holdTO = setTimeout(function(){ holding = true; pausedAt = performance.now(); }, 240);
-});
-frame.addEventListener('pointerup', function(e){
-  if (!started) return;
-  if (e.target.closest('button')) return;
   clearTimeout(holdTO);
+  holdTO = setTimeout(function(){ holding = true; freeze(); }, 220);
+});
+function release(e, cancelled){
+  if (!active) return;
+  active = false;
+  clearTimeout(holdTO);
+  if (holding){ holding = false; thaw(); return; }
+  if (cancelled || !e) return;
   var dx = e.clientX - downX;
-  if (holding){
-    if (pausedAt !== null){ t0 += performance.now() - pausedAt; pausedAt = null; }
-    holding = false;
-    return;
-  }
   if (Math.abs(dx) > 55){ dx < 0 ? next() : prev(); return; }
-  if (performance.now() - downT < 350){
-    var x = e.clientX - frame.getBoundingClientRect().left;
-    var scale = frame.getBoundingClientRect().width / 390;
-    (x < 130 * scale) ? prev() : next();
-  }
-});
-frame.addEventListener('pointercancel', function(){
-  clearTimeout(holdTO);
-  if (holding && pausedAt !== null){ t0 += performance.now() - pausedAt; pausedAt = null; }
-  holding = false;
-});
+  var r = frame.getBoundingClientRect();
+  var x = e.clientX - r.left;
+  (x < r.width * 0.33) ? prev() : next();
+}
+frame.addEventListener('pointerup', function(e){ if (started && !e.target.closest('button')) release(e, false); });
+frame.addEventListener('pointercancel', function(e){ release(e, true); });
+window.addEventListener('blur', function(){ release(null, true); });
 document.addEventListener('keydown', function(e){
   if (!started) return;
   if (e.key === 'ArrowRight' || e.key === 'Right' || e.key === ' ' || e.code === 'Space') next();
@@ -603,8 +631,7 @@ document.getElementById('startbtn').addEventListener('click', function(e){ e.sto
 
 /* keep story timer honest when tab is hidden */
 document.addEventListener('visibilitychange', function(){
-  if (document.hidden){ if (pausedAt === null) pausedAt = performance.now(); }
-  else { if (pausedAt !== null && !holding){ t0 += performance.now() - pausedAt; pausedAt = null; } }
+  if (document.hidden) freeze(); else if (!holding) thaw();
 });
 
 /* tiny state handle (debug) */
